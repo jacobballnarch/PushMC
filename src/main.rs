@@ -11,6 +11,8 @@ struct Args {
     name:String,
     #[arg(long)]
     version:String,
+    #[arg(long)]
+    eula:bool,
 }
 
 
@@ -90,9 +92,14 @@ async fn main() {
     let args = Args::parse();
     let dir = server_dir(&args.name);
     let jar_name = download_version(&args.version, &dir).await.expect("не удалось скачать сервер");
-    println!("{:?}", which::which("java"));
-    println!("{:?}", std::env::var("JAVA_HOME").ok());
-    write_eula(&dir, true).await;
+    /*println!("{:?}", which::which("java"));
+    println!("{:?}", std::env::var("JAVA_HOME").ok());*/
+    let accepted = args.eula;
+    if accepted {
+        write_eula(&dir, args.eula).await;
+    } else {
+        println!("Без eula сервер не запустится. Принять eula можно через --eula")
+    }
     let mut child = tokio::process::Command::new("java")
         .arg("-Xms1G")
         .arg("-Xmx2G")
