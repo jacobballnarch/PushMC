@@ -104,11 +104,7 @@ async fn main() {
         return;
     }
     let mut child = tokio::process::Command::new("java")
-        .arg("-Xms1G")
-        .arg("-Xmx2G")
-        .arg("-jar")
-        .arg(jar_name)
-        .arg("nogui")
+        .arg("-Xms1G").arg("-Xmx2G").arg("-jar").arg(jar_name).arg("nogui")
         .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -122,6 +118,15 @@ async fn main() {
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             println!("[server] {line}");
+        }
+    });
+    
+    tokio::spawn(async move {
+        let mut input = BufReader::new(tokio::io::stdin()).lines();
+        while let Ok(Some(line)) = input.next_line().await {
+            if stdin.write_all(line.as_bytes()).await.is_err() { break; }
+            if stdin.write_all(b"\n").await.is_err() { break; }
+            if line == "stop" { break; }
         }
     });
 
