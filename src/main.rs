@@ -3,6 +3,17 @@ use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_stream::StreamExt;
+use clap::Parser;
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long)]
+    name:String,
+    #[arg(long)]
+    version:String,
+}
+
+
 
 fn client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
@@ -19,7 +30,7 @@ async fn parse_versions(response: reqwest::Response) {
     let response_json: serde_json::Value = response.json().await.unwrap();
     let versions_obj = response_json["versions"].as_object().unwrap();
     let mut output:Vec<String> = Vec::new();
-    for (major, list) in versions_obj {
+    for (_major, list) in versions_obj {
         for v in list.as_array().unwrap() {
             output.push(v.as_str().unwrap().to_string());
         }
@@ -42,15 +53,18 @@ async fn get_download_url(mc_version: &str) -> Option<String> {
     None
 }
 
-async fn download_version(mc_version: &str, dir: &PathBuf) {
+async fn download_version(mc_version: &str, dir: &Path) -> Option<String> {
     let Some(url) = get_download_url(mc_version).await else {
         println!("Не нашёл стабильный билд для версии {mc_version}");
-        return;
+        println!("Доступные версии для скачивания:");
+        let resp = client().get("https://fill.papermc.io/v3/projects/paper").send().await.ok().unwrap();
+        parse_versions(resp).await;
+        return None;
     };
 
     tokio::fs::create_dir_all(dir).await.unwrap();
-    let file_name = url.split('/').last().unwrap();
-    let file_path = dir.join(file_name);
+    let file_name = url.split('/').last().unwrap().to_string();
+    let file_path = dir.join(&file_name);
 
     let response = client().get(url).send().await.unwrap();
     let mut stream = response.bytes_stream();
@@ -59,9 +73,11 @@ async fn download_version(mc_version: &str, dir: &PathBuf) {
         let chunk = chunk_result.unwrap();
         file.write_all(&chunk).await.unwrap();
     }
+
+    Some(file_name)
 }
 
-async fn write_eula(server_dir: &PathBuf, accepted: bool) {
+async fn write_eula(server_dir: &Path, accepted: bool) {
     let content = format!(
         "#By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).\neula={}\n",
         accepted
@@ -71,20 +87,19 @@ async fn write_eula(server_dir: &PathBuf, accepted: bool) {
 
 #[tokio::main]
 async fn main() {
-    let resp = client().get("https://fill.papermc.io/v3/projects/paper")
-    .send().await.ok().unwrap();
-    parse_versions(resp).await;
-    download_version("1.12.2", &server_dir("test")).await;
+    let args = Args::parse();
+    let dir = server_dir(&args.name);
+    let jar_name = download_version(&args.version, &dir).await.expect("не удалось скачать сервер");
     println!("{:?}", which::which("java"));
     println!("{:?}", std::env::var("JAVA_HOME").ok());
-    write_eula(&server_dir("test"), true).await;
+    write_eula(&dir, true).await;
     let mut child = tokio::process::Command::new("java")
         .arg("-Xms1G")
         .arg("-Xmx2G")
         .arg("-jar")
-        .arg("paper-1.12.2-1620.jar")
+        .arg(jar_name)
         .arg("nogui")
-        .current_dir(server_dir("test"))
+        .current_dir(&dir)
         .spawn()
         .expect("не смог запустить java");
 
