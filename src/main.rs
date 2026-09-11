@@ -59,15 +59,24 @@ async fn download_version(mc_version: &str) {
     }
 }
 
+async fn write_eula(server_dir: &std::path::Path, accepted: bool) {
+    let content = format!(
+        "#By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).\neula={}\n",
+        accepted
+    );
+    tokio::fs::write(server_dir.join("eula.txt"), content).await.unwrap();
+}
+
 #[tokio::main]
 async fn main() {
-    /*let resp = client().get("https://fill.papermc.io/v3/projects/paper")
+    let resp = client().get("https://fill.papermc.io/v3/projects/paper")
     .send().await.ok().unwrap();
     parse_versions(resp).await;
-    download_version("1.12.2").await;*/
+    download_version("1.12.2").await;
     println!("{:?}", which::which("java"));
     println!("{:?}", std::env::var("JAVA_HOME").ok());
     let server_dir = Path::new("./downloads/");
+    write_eula(&server_dir, true).await;
     let mut child = tokio::process::Command::new("java")
         .arg("-Xms1G")
         .arg("-Xmx2G")
