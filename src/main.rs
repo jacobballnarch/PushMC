@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_stream::StreamExt;
 use clap::Parser;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Parser)]
 struct Args {
@@ -98,7 +100,8 @@ async fn main() {
     if accepted {
         write_eula(&dir, args.eula).await;
     } else {
-        println!("Без eula сервер не запустится. Принять eula можно через --eula")
+        println!("Без eula сервер не запустится. Принять eula можно через --eula");
+        return;
     }
     let mut child = tokio::process::Command::new("java")
         .arg("-Xms1G")
@@ -107,8 +110,20 @@ async fn main() {
         .arg(jar_name)
         .arg("nogui")
         .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .spawn()
         .expect("не смог запустить java");
+
+    let mut stdin = child.stdin.take().expect("stdin не подключен");
+    let stdout = child.stdout.take().expect("stdout не подключен");
+
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            println!("[server] {line}");
+        }
+    });
 
     let status = child.wait().await.expect("ошибка при ожидании процесса");
     println!("Java завершилась с кодом: {:?}", status.code());
