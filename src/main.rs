@@ -31,6 +31,7 @@ enum Core {
     Bukkit,
     Fabric,
     Forge,
+    Neoforge,
     Arclight,
     Mohist,
     Magma,
@@ -81,7 +82,8 @@ async fn get_download_url(core: &Core, mc_version: &str, exp: bool) -> Option<St
         }
         Core::Purpur => {Some(format!("https://api.purpurmc.org/v2/purpur/{mc_version}/latest/download"))}
         Core::Fabric => get_fabric_url(mc_version).await,
-        Core::Forge => {None}
+        Core::Forge => get_forge_url(mc_version).await,
+        Core::Neoforge => get_neoforge_url(mc_version).await,
         Core::Arclight => {None}
         Core::Bukkit => {None}
         Core::Magma => {None}
@@ -105,6 +107,36 @@ async fn get_fabric_url(mc_version: &str) -> Option<String> {
 
     Some(format!(
         "https://meta.fabricmc.net/v2/versions/loader/{mc_version}/{loader_version}/{installer_version}/server/jar"
+    ))
+}
+
+async fn get_neoforge_url(mc_version: &str) -> Option<String> {
+    let resp = client()
+        .get("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml")
+        .send().await.ok()?;
+    let xml = resp.text().await.ok()?;
+    let versions = parse_maven_versions(&xml);
+
+    let prefix = format!("{}.", mc_version.strip_prefix("1.")?);
+    let version = versions.iter().rev().find(|v| v.starts_with(&prefix))?;
+
+    Some(format!(
+        "https://maven.neoforged.net/releases/net/neoforged/neoforge/{version}/neoforge-{version}-installer.jar"
+    ))
+}
+
+async fn get_forge_url(mc_version: &str) -> Option<String> {
+    let resp = client()
+        .get("https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml")
+        .send().await.ok()?;
+    let xml = resp.text().await.ok()?;
+    let versions = parse_maven_versions(&xml);
+
+    let prefix = format!("{mc_version}-");
+    let version = versions.iter().rev().find(|v| v.starts_with(&prefix))?;
+
+    Some(format!(
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/{version}/forge-{version}-installer.jar"
     ))
 }
 
@@ -158,6 +190,19 @@ async fn parse_purpur_versions(response: reqwest::Response) {
     println!("Versions: {:?}", output);
 }
 
+fn parse_maven_versions(xml: &str) -> Vec<String> {
+    let mut versions = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<version>") {
+        rest = &rest[start + 9..];
+        if let Some(end) = rest.find("</version>") {
+            versions.push(rest[..end].trim().to_string());
+            rest = &rest[end + 10..];
+        } else { break; }
+    }
+    versions
+}
+
 async fn write_eula(server_dir: &Path, accepted: bool) {
     let content = format!(
         "#By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).\neula={}\n",
@@ -178,13 +223,33 @@ async fn main() {
         println!("Без eula сервер не запустится. Принять eula можно через --eula");
         return;
     }
-    let mut child = tokio::process::Command::new("java")
-        .arg("-Xms1G").arg("-Xmx2G").arg("-jar").arg(jar_name).arg("nogui")
+    if matches!(args.core, Core::Forge | Core::Neoforge) {
+        println!("Запускаю установщик {}...", jar_name);
+        let install_status = tokio::process::Command::new("java")
+            .arg("-jar").arg(&jar_name).arg("--installServer")
+            .current_dir(&dir)
+            .status()
+            .await
+            .expect("не смог запустить установщик");
+
+        if !install_status.success() {
+            eprintln!("Установка не удалась, код: {:?}", install_status.code());
+            return;
+        }
+    }
+
+    let (program, launch_args): (&str, Vec<&str>) = if matches!(args.core, Core::Forge | Core::Neoforge) {
+        ("bash", vec!["run.sh", "nogui"])
+    } else {
+        ("java", vec!["-Xms1G", "-Xmx2G", "-jar", &jar_name, "nogui"])
+    };
+    let mut child = tokio::process::Command::new(program)
+        .args(&launch_args)
         .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("не смог запустить java");
+        .expect("не смог запустить сервер");
 
     let mut stdin = child.stdin.take().expect("stdin не подключен");
     let stdout = child.stdout.take().expect("stdout не подключен");
