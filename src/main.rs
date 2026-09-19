@@ -32,9 +32,6 @@ enum Core {
     Fabric,
     Forge,
     Neoforge,
-    Arclight,
-    Mohist,
-    Magma,
 }
 
 fn client() -> &'static reqwest::Client {
@@ -84,10 +81,7 @@ async fn get_download_url(core: &Core, mc_version: &str, exp: bool) -> Option<St
         Core::Fabric => get_fabric_url(mc_version).await,
         Core::Forge => get_forge_url(mc_version).await,
         Core::Neoforge => get_neoforge_url(mc_version).await,
-        Core::Arclight => {None}
         Core::Bukkit => {None}
-        Core::Magma => {None}
-        Core::Mohist => {None}
         Core::Spigot => {None}
     }
 }
