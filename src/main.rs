@@ -130,22 +130,32 @@ async fn get_forge_url(mc_version: &str) -> Option<String> {
     ))
 }
 
-async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool) -> Option<String> {
-    let Some(url) = get_download_url(core, mc_version, exp).await else {
-        println!("Не нашёл стабильный билд для версии {mc_version}");
-        println!("Доступные версии для скачивания:");
-        match core {
-            Core::Paper => {
-                let resp = client().get("https://fill.papermc.io/v3/projects/paper").send().await.ok().unwrap();
-                parse_versions(resp).await;
+
+
+
+
+
+async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool, custom_url: &Option<String>) -> Option<String> {
+    let url = if let Some(custom) = custom_url {
+        custom.clone()
+    } else {
+        let Some(u) = get_download_url(core, mc_version, exp).await else {
+            println!("Не нашёл стабильный билд для версии {mc_version}");
+            println!("Доступные версии для скачивания:");
+            match core {
+                Core::Paper => {
+                    let resp = client().get("https://fill.papermc.io/v3/projects/paper").send().await.ok().unwrap();
+                    parse_versions(resp).await;
+                }
+                Core::Purpur => {
+                    let resp = client().get("https://api.purpurmc.org/v2/purpur").send().await.ok().unwrap();
+                    parse_purpur_versions(resp).await;
+                }
+                _ => println!("(список версий для этого ядра пока не поддержан)"),
             }
-            Core::Purpur => {
-                let resp = client().get("https://api.purpurmc.org/v2/purpur").send().await.ok().unwrap();
-                parse_purpur_versions(resp).await;
-            }
-            _ => println!("(список версий для этого ядра пока не поддержан)"),
-        }
-        return None;
+            return None;
+        };
+        u
     };
 
     tokio::fs::create_dir_all(dir).await.unwrap();
@@ -205,7 +215,9 @@ async fn write_eula(server_dir: &Path, accepted: bool) {
 async fn main() {
     let args = Args::parse();
     let dir = server_dir(&args.name);
-    let jar_name = download_version(&args.core, &args.version, &dir, args.experimental).await.expect("не удалось скачать сервер");
+    let jar_name = download_version(&args.core, &args.version, &dir, args.experimental, &args.custom_core_url)
+        .await
+        .expect("не удалось скачать сервер");
     let accepted = args.eula;
     if accepted {
         write_eula(&dir, args.eula).await;
