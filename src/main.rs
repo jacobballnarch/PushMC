@@ -15,9 +15,26 @@ struct Args {
     version:String,
     #[arg(long)]
     eula:bool,
+    #[arg(long, value_enum)]
+    core: Core,
+    #[arg(long)]
+    custom_core_url: Option<String>,
+    #[arg(long)]
+    experimental:bool,
 }
 
-
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum Core {
+    Paper,
+    Purpur,
+    Spigot,
+    Bukkit,
+    Fabric,
+    Forge,
+    Arclight,
+    Mohist,
+    Magma,
+}
 
 fn client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
@@ -42,14 +59,11 @@ async fn parse_versions(response: reqwest::Response) {
     println!("Versions: {:?}", output);
 }
 
-async fn get_download_url(mc_version: &str) -> Option<String> {
-    let url = format!("https://fill.papermc.io/v3/projects/paper/versions/{mc_version}/builds");
-    let resp = client().get(url).send().await.ok()?;
-    let builds: serde_json::Value = resp.json().await.ok()?;
-
+fn find_build_url(builds: &serde_json::Value, experimental: bool) -> Option<String> {
+    let wanted_channel = if experimental { "EXPERIMENTAL" } else { "STABLE" };
     let builds_arr = builds.as_array()?;
     for build in builds_arr {
-        if build["channel"].as_str() == Some("STABLE") {
+        if build["channel"].as_str() == Some(wanted_channel) {
             let download_url = build["downloads"]["server:default"]["url"].as_str()?;
             return Some(download_url.to_string());
         }
@@ -57,20 +71,74 @@ async fn get_download_url(mc_version: &str) -> Option<String> {
     None
 }
 
-async fn download_version(mc_version: &str, dir: &Path) -> Option<String> {
-    let Some(url) = get_download_url(mc_version).await else {
+async fn get_download_url(core: &Core, mc_version: &str, exp: bool) -> Option<String> {
+    match core {
+        Core::Paper => {
+            let url = format!("https://fill.papermc.io/v3/projects/paper/versions/{mc_version}/builds");
+            let resp = client().get(url).send().await.ok()?;
+            let builds: serde_json::Value = resp.json().await.ok()?;
+            find_build_url(&builds, exp)
+        }
+        Core::Purpur => {Some(format!("https://api.purpurmc.org/v2/purpur/{mc_version}/latest/download"))}
+        Core::Fabric => get_fabric_url(mc_version).await,
+        Core::Forge => {None}
+        Core::Arclight => {None}
+        Core::Bukkit => {None}
+        Core::Magma => {None}
+        Core::Mohist => {None}
+        Core::Spigot => {None}
+    }
+}
+
+async fn get_fabric_url(mc_version: &str) -> Option<String> {
+    let resp = client()
+        .get(format!("https://meta.fabricmc.net/v2/versions/loader/{mc_version}"))
+        .send().await.ok()?;
+    let loaders: serde_json::Value = resp.json().await.ok()?;
+    let loader_version = loaders.as_array()?.first()?["loader"]["version"].as_str()?;
+
+    let resp = client()
+        .get("https://meta.fabricmc.net/v2/versions/installer")
+        .send().await.ok()?;
+    let installers: serde_json::Value = resp.json().await.ok()?;
+    let installer_version = installers.as_array()?.first()?["version"].as_str()?;
+
+    Some(format!(
+        "https://meta.fabricmc.net/v2/versions/loader/{mc_version}/{loader_version}/{installer_version}/server/jar"
+    ))
+}
+
+async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool) -> Option<String> {
+    let Some(url) = get_download_url(core, mc_version, exp).await else {
         println!("Не нашёл стабильный билд для версии {mc_version}");
         println!("Доступные версии для скачивания:");
-        let resp = client().get("https://fill.papermc.io/v3/projects/paper").send().await.ok().unwrap();
-        parse_versions(resp).await;
+        match core {
+            Core::Paper => {
+                let resp = client().get("https://fill.papermc.io/v3/projects/paper").send().await.ok().unwrap();
+                parse_versions(resp).await;
+            }
+            Core::Purpur => {
+                let resp = client().get("https://api.purpurmc.org/v2/purpur").send().await.ok().unwrap();
+                parse_purpur_versions(resp).await;
+            }
+            _ => println!("(список версий для этого ядра пока не поддержан)"),
+        }
         return None;
     };
 
     tokio::fs::create_dir_all(dir).await.unwrap();
-    let file_name = url.split('/').last().unwrap().to_string();
+
+    let response = client().get(&url).send().await.unwrap();
+
+    let file_name = response.headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split("filename=").nth(1))
+        .map(|s| s.trim_matches('"').to_string())
+        .unwrap_or_else(|| url.split('/').last().unwrap().to_string());
+
     let file_path = dir.join(&file_name);
 
-    let response = client().get(url).send().await.unwrap();
     let mut stream = response.bytes_stream();
     let mut file = File::create(&file_path).await.unwrap();
     while let Some(chunk_result) = stream.next().await {
@@ -79,6 +147,15 @@ async fn download_version(mc_version: &str, dir: &Path) -> Option<String> {
     }
 
     Some(file_name)
+}
+
+async fn parse_purpur_versions(response: reqwest::Response) {
+    let response_json: serde_json::Value = response.json().await.unwrap();
+    let versions = response_json["versions"].as_array().unwrap();
+    let output: Vec<&str> = versions.iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    println!("Versions: {:?}", output);
 }
 
 async fn write_eula(server_dir: &Path, accepted: bool) {
@@ -93,9 +170,7 @@ async fn write_eula(server_dir: &Path, accepted: bool) {
 async fn main() {
     let args = Args::parse();
     let dir = server_dir(&args.name);
-    let jar_name = download_version(&args.version, &dir).await.expect("не удалось скачать сервер");
-    /*println!("{:?}", which::which("java"));
-    println!("{:?}", std::env::var("JAVA_HOME").ok());*/
+    let jar_name = download_version(&args.core, &args.version, &dir, args.experimental).await.expect("не удалось скачать сервер");
     let accepted = args.eula;
     if accepted {
         write_eula(&dir, args.eula).await;
@@ -120,7 +195,7 @@ async fn main() {
             println!("[server] {line}");
         }
     });
-    
+
     tokio::spawn(async move {
         let mut input = BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(line)) = input.next_line().await {
