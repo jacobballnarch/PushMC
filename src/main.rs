@@ -21,6 +21,10 @@ struct Args {
     custom_core_url: Option<String>,
     #[arg(long)]
     experimental:bool,
+    #[arg(long, default_value = "1G")]
+    xms: String,
+    #[arg(long, default_value = "2G")]
+    xmx: String,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -255,11 +259,21 @@ async fn main() {
         }
     }
 
+    let xms_flag = format!("-Xms{}", args.xms);
+    let xmx_flag = format!("-Xmx{}", args.xmx);
+
+    let script_name = if cfg!(target_os = "windows") { "run.bat" } else { "run.sh" };
+
     let (program, launch_args): (&str, Vec<&str>) = if matches!(args.core, Core::Forge | Core::Neoforge) {
-        ("bash", vec!["run.sh", "nogui"])
+        if cfg!(target_os = "windows") {
+            ("cmd", vec!["/C", script_name, "nogui"])
+        } else {
+            ("bash", vec![script_name, "nogui"])
+        }
     } else {
-        ("java", vec!["-Xms1G", "-Xmx2G", "-jar", &jar_name, "nogui"])
+        ("java", vec![&xms_flag, &xmx_flag, "-jar", &jar_name, "nogui"])
     };
+    
     let mut child = tokio::process::Command::new(program)
         .args(&launch_args)
         .current_dir(&dir)
