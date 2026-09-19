@@ -25,6 +25,7 @@ struct Args {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 enum Core {
+    Vanilla,
     Paper,
     Purpur,
     Fabric,
@@ -69,6 +70,7 @@ fn find_build_url(builds: &serde_json::Value, experimental: bool) -> Option<Stri
 
 async fn get_download_url(core: &Core, mc_version: &str, exp: bool) -> Option<String> {
     match core {
+        Core::Vanilla => get_vanilla_url(mc_version).await,
         Core::Paper => {
             let url = format!("https://fill.papermc.io/v3/projects/paper/versions/{mc_version}/builds");
             let resp = client().get(url).send().await.ok()?;
@@ -80,6 +82,24 @@ async fn get_download_url(core: &Core, mc_version: &str, exp: bool) -> Option<St
         Core::Forge => get_forge_url(mc_version).await,
         Core::Neoforge => get_neoforge_url(mc_version).await,
     }
+}
+
+async fn get_vanilla_url(mc_version: &str) -> Option<String> {
+    let resp = client()
+        .get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
+        .send().await.ok()?;
+    let manifest: serde_json::Value = resp.json().await.ok()?;
+
+    let versions = manifest["versions"].as_array()?;
+    let version_url = versions.iter()
+        .find(|v| v["id"].as_str() == Some(mc_version))?["url"]
+        .as_str()?;
+
+    let resp = client().get(version_url).send().await.ok()?;
+    let version_meta: serde_json::Value = resp.json().await.ok()?;
+    let download_url = version_meta["downloads"]["server"]["url"].as_str()?;
+
+    Some(download_url.to_string())
 }
 
 async fn get_fabric_url(mc_version: &str) -> Option<String> {
@@ -129,11 +149,6 @@ async fn get_forge_url(mc_version: &str) -> Option<String> {
         "https://maven.minecraftforge.net/net/minecraftforge/forge/{version}/forge-{version}-installer.jar"
     ))
 }
-
-
-
-
-
 
 async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool, custom_url: &Option<String>) -> Option<String> {
     let url = if let Some(custom) = custom_url {
