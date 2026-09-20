@@ -25,6 +25,10 @@ struct Args {
     xms: String,
     #[arg(long, default_value = "2G")]
     xmx: String,
+    #[arg(long)]
+    custom_java_path: Option<String>,
+    #[arg(long)]
+    java_auto: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -159,8 +163,8 @@ async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool, 
         custom.clone()
     } else {
         let Some(u) = get_download_url(core, mc_version, exp).await else {
-            println!("Не нашёл стабильный билд для версии {mc_version}");
-            println!("Доступные версии для скачивания:");
+            println!("Couldn't find a stable build for version {mc_version}");
+            println!("Available versions to download:");
             match core {
                 Core::Paper => {
                     let resp = client().get("https://fill.papermc.io/v3/projects/paper").send().await.ok().unwrap();
@@ -170,7 +174,7 @@ async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool, 
                     let resp = client().get("https://api.purpurmc.org/v2/purpur").send().await.ok().unwrap();
                     parse_purpur_versions(resp).await;
                 }
-                _ => println!("(список версий для этого ядра пока не поддержан)"),
+                _ => println!("(version listing not supported for this core yet)"),
             }
             return None;
         };
@@ -230,31 +234,98 @@ async fn write_eula(server_dir: &Path, accepted: bool) {
     tokio::fs::write(server_dir.join("eula.txt"), content).await.unwrap();
 }
 
+fn find_java_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(java_home) = std::env::var("JAVA_HOME") {
+        let p = Path::new(&java_home).join("bin").join(if cfg!(windows) { "java.exe" } else { "java" });
+        if p.exists() { candidates.push(p); }
+    }
+
+    if let Ok(p) = which::which("java") {
+        if !candidates.contains(&p) { candidates.push(p); }
+    }
+
+    if cfg!(target_os = "linux") {
+        if let Ok(entries) = std::fs::read_dir("/usr/lib/jvm") {
+            for entry in entries.flatten() {
+                let p = entry.path().join("bin").join("java");
+                if p.exists() && !candidates.contains(&p) { candidates.push(p); }
+            }
+        }
+    }
+
+    candidates
+}
+
+fn get_java_major_version(java_path: &Path) -> Option<u32> {
+    let output = std::process::Command::new(java_path).arg("-version").output().ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let start = stderr.find('"')? + 1;
+    let rest = &stderr[start..];
+    let version_str = &rest[..rest.find('"')?];
+
+    let mut parts = version_str.split('.');
+    let first: u32 = parts.next()?.parse().ok()?;
+    if first == 1 {
+        parts.next()?.parse().ok()
+    } else {
+        Some(first)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    let java_path: PathBuf = if let Some(custom) = &args.custom_java_path {
+        PathBuf::from(custom)
+    } else {
+        let candidates = find_java_candidates();
+        let versioned: Vec<(PathBuf, Option<u32>)> = candidates.into_iter()
+            .map(|p| { let v = get_java_major_version(&p); (p, v) })
+            .collect();
+
+        if args.java_auto {
+            versioned.iter()
+                .filter_map(|(p, v)| v.map(|v| (p, v)))
+                .filter(|(_, v)| *v <= 21)
+                .max_by_key(|(_, v)| *v)
+                .map(|(p, _)| p.clone())
+                .expect("no suitable Java (<=21) found on this machine")
+        } else {
+            println!("Found Java versions:");
+            for (i, (p, v)) in versioned.iter().enumerate() {
+                println!("{}) {} — {}", i + 1, p.display(), v.map(|v| v.to_string()).unwrap_or("unknown".into()));
+            }
+            println!("Choose a number:");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).unwrap();
+            let idx: usize = input.trim().parse().expect("not a number");
+            versioned[idx - 1].0.clone()
+        }
+    };
     let dir = server_dir(&args.name);
     let jar_name = download_version(&args.core, &args.version, &dir, args.experimental, &args.custom_core_url)
         .await
-        .expect("не удалось скачать сервер");
+        .expect("failed to download server");
     let accepted = args.eula;
     if accepted {
         write_eula(&dir, args.eula).await;
     } else {
-        println!("Без eula сервер не запустится. Принять eula можно через --eula");
+        println!("Server won't start without EULA. Accept it with --eula");
         return;
     }
     if matches!(args.core, Core::Forge | Core::Neoforge) {
-        println!("Запускаю установщик {}...", jar_name);
-        let install_status = tokio::process::Command::new("java")
+        println!("Running installer {}...", jar_name);
+        let install_status = tokio::process::Command::new(&java_path)
             .arg("-jar").arg(&jar_name).arg("--installServer")
             .current_dir(&dir)
             .status()
             .await
-            .expect("не смог запустить установщик");
+            .expect("failed to launch installer");
 
         if !install_status.success() {
-            eprintln!("Установка не удалась, код: {:?}", install_status.code());
+            eprintln!("Installation failed, exit code: {:?}", install_status.code());
             return;
         }
     }
@@ -263,6 +334,7 @@ async fn main() {
     let xmx_flag = format!("-Xmx{}", args.xmx);
 
     let script_name = if cfg!(target_os = "windows") { "run.bat" } else { "run.sh" };
+    let java_path_str = java_path.to_str().expect("java path contains invalid characters");
 
     let (program, launch_args): (&str, Vec<&str>) = if matches!(args.core, Core::Forge | Core::Neoforge) {
         if cfg!(target_os = "windows") {
@@ -271,19 +343,19 @@ async fn main() {
             ("bash", vec![script_name, "nogui"])
         }
     } else {
-        ("java", vec![&xms_flag, &xmx_flag, "-jar", &jar_name, "nogui"])
+        (java_path_str, vec![&xms_flag, &xmx_flag, "-jar", &jar_name, "nogui"])
     };
-    
+
     let mut child = tokio::process::Command::new(program)
         .args(&launch_args)
         .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("не смог запустить сервер");
+        .expect("failed to launch server");
 
-    let mut stdin = child.stdin.take().expect("stdin не подключен");
-    let stdout = child.stdout.take().expect("stdout не подключен");
+    let mut stdin = child.stdin.take().expect("stdin not connected");
+    let stdout = child.stdout.take().expect("stdout not connected");
 
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
@@ -301,6 +373,6 @@ async fn main() {
         }
     });
 
-    let status = child.wait().await.expect("ошибка при ожидании процесса");
-    println!("Java завершилась с кодом: {:?}", status.code());
+    let status = child.wait().await.expect("error while waiting for process");
+    println!("Java exited with code: {:?}", status.code());
 }
