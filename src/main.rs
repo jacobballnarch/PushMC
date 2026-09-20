@@ -29,6 +29,73 @@ struct Args {
     custom_java_path: Option<String>,
     #[arg(long)]
     java_auto: bool,
+    #[arg(long, default_value = "true")]
+    online_mode: bool,
+    #[arg(long, default_value = "true")]
+    pvp: bool,
+    #[arg(long, default_value_t = 20)]
+    max_players: u32,
+    #[arg(long, default_value = "survival")]
+    gamemode: String,
+    #[arg(long, default_value = "hard")]
+    difficulty: String,
+    #[arg(long, default_value = "A Minecraft Server")]
+    motd: String,
+    #[arg(long)]
+    white_list: bool,
+    #[arg(long, default_value_t = 10)]
+    view_distance: u8,
+    #[arg(long, default_value_t = 10)]
+    simulation_distance: u8,
+    #[arg(long)]
+    enable_command_block: bool,
+    #[arg(long, default_value_t = 16)]
+    spawn_protection: u32,
+    #[arg(long, default_value = "true")]
+    allow_flight: bool,
+    #[arg(long)]
+    seed: Option<String>,
+    #[arg(long, default_value = "default")]
+    world_type: String,
+    #[arg(long)]
+    bonus_chest: bool,
+    #[arg(long)]
+    ready_world: Option<String>,
+}
+
+async fn write_properties(dir: &Path, args: &Args) {
+    let mut c = String::new();
+    c.push_str(&format!("online-mode={}\n", args.online_mode));
+    c.push_str(&format!("pvp={}\n", args.pvp));
+    c.push_str(&format!("max-players={}\n", args.max_players));
+    c.push_str(&format!("gamemode={}\n", args.gamemode));
+    c.push_str(&format!("difficulty={}\n", args.difficulty));
+    c.push_str(&format!("motd={}\n", args.motd));
+    c.push_str(&format!("white-list={}\n", args.white_list));
+    c.push_str(&format!("view-distance={}\n", args.view_distance));
+    c.push_str(&format!("simulation-distance={}\n", args.simulation_distance));
+    c.push_str(&format!("enable-command-block={}\n", args.enable_command_block));
+    c.push_str(&format!("spawn-protection={}\n", args.spawn_protection));
+    c.push_str(&format!("allow-flight={}\n", args.allow_flight));
+    if let Some(s) = &args.seed { c.push_str(&format!("level-seed={s}\n")); }
+    c.push_str(&format!("level-type={}\n", args.world_type));
+    c.push_str(&format!("generate-bonus-chest={}\n", args.bonus_chest));
+    tokio::fs::write(dir.join("server.properties"), c).await.unwrap();
+}
+
+async fn copy_dir_recursively(src: &Path, dst: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let file_type = entry.file_type().await?;
+        let dest_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            Box::pin(copy_dir_recursively(&entry.path(), &dest_path)).await?;
+        } else {
+            tokio::fs::copy(entry.path(), &dest_path).await?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -314,6 +381,20 @@ async fn main() {
     } else {
         println!("Server won't start without EULA. Accept it with --eula");
         return;
+    }
+    write_properties(&dir, &args).await;
+    if let Some(world_path) = &args.ready_world {
+        let dest = dir.join("world");
+        if let Err(e) = copy_dir_recursively(Path::new(world_path), &dest).await {
+            println!("Couldn't copy the world from '{world_path}': {e}");
+            println!("Continue with a fresh default world? (y/n)");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).unwrap();
+            if input.trim().eq_ignore_ascii_case("n") {
+                println!("Aborted by user.");
+                return;
+            }
+        }
     }
     if matches!(args.core, Core::Forge | Core::Neoforge) {
         println!("Running installer {}...", jar_name);
