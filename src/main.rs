@@ -258,7 +258,7 @@ async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool, 
 
     tokio::fs::create_dir_all(dir).await.unwrap();
 
-    let response = client().get(&url).send().await.unwrap();
+    let response = client().get(&url).send().await.unwrap().error_for_status().expect("Download failed, check your internet connection");
 
     let file_name = response.headers()
         .get(reqwest::header::CONTENT_DISPOSITION)
