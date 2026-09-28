@@ -49,7 +49,7 @@ The server is created in `./servers/<name>/`.
 More examples:
 ```
 # Fabric, 4 GB of RAM, auto-pick Java
-./PushMC --name fab --version 1.21.4 --core fabric --eula --xms 2G --xmx 4G Type `stop` to shut it down.--java-auto
+./PushMC --name fab --version 1.21.4 --core fabric --eula --xms 2G --xmx 4G --java-auto
 
 # Creative, peaceful server with a fixed seed and an existing world
 ./PushMC --name build --version 1.21.4 --core purpur --eula \
