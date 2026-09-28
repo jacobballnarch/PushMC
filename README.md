@@ -24,16 +24,20 @@ Existing tools that automate this are mostly heavy, Java-based and slow to start
 7. **Escape hatch** — `--custom-core-url` lets you use any jar or installer URL for cores that aren't supported directly.
 
 ## Installation
+### Option 1: prebuilt binary (no Rust needed)
+Grab the latest binary for your OS from the [Releases page](https://github.com/jacobballnarch/PushMC/releases) and run it directly.
+
+### Option 2: build from source
 ```
 git clone https://github.com/jacobballnarch/PushMC
 cd PushMC
 cargo build --release
 ```
-The executable will be in `target/release`.
+The executable will be in `target/release/`.
 
-Requirements:
-- **Rust 1.98+** (to build)
-- **Java** 
+Requirements to build:
+- **Rust 1.98+**
+- Either way, you'll also need: **Java** 
 
 ## Usage
 Minimal example (Paper 1.21.4, EULA accepted):
