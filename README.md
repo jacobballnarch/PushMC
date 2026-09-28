@@ -21,7 +21,10 @@ Existing tools that automate this are mostly heavy, Java-based and slow to start
 4. **Bring your own world** — `--ready-world <path>` copies an existing world folder into the new server.
 5. **Java detection** — finds Java installs (`JAVA_HOME`, `PATH`, `/usr/lib/jvm`), lets you pick one, or auto-selects the newest one up to Java 21.
 6. **Live console** — server output is streamed to your terminal and everything you type is passed to the server.
-7. **Escape hatch** — `--custom-core-url` lets you use any jar or installer URL for cores that aren't supported directly.
+7. **Daemon mode** — `--daemon` runs the server in the background, and survives closing the terminal. Manage it with `status`, `cmd`, `errors` and `stop`.
+8. **Quick restart** — once a server is installed, `pushmc run <name>` starts it again, no version or core flags needed.
+9. **Logs** — all server output (stdout + stderr) is saved to `servers/<name>/server.log` in every mode.
+10. **Escape hatch** — `--custom-core-url` lets you use any jar or installer URL for cores that aren't supported directly.
 
 ## Installation
 ### Option 1: prebuilt binary (no Rust needed)
@@ -42,24 +45,37 @@ Requirements to build:
 ## Usage
 Minimal example (Paper 1.21.4, EULA accepted):
 ```
-./PushMC --name survival --version 1.21.4 --core paper --eula
+./pushmc start --name survival --version 1.21.4 --core paper --eula
 ```
-The server is created in `./servers/<name>/`.
+The server is created in `./servers/<name>/`, relative to the folder you run PushMC from. Always run it from the same folder to find your servers again.
+
+### Managing servers
+```
+pushmc run <name>             # start an installed server (live console)
+pushmc run <name> --daemon    # start it in the background
+pushmc status <name>          # pid, uptime, error count
+pushmc cmd <name> say hello   # send a command to the server console
+pushmc errors <name>          # lines with ERROR / Exception
+pushmc stop <name>            # graceful stop
+```
+`status`, `cmd`, `errors` and `stop` work for both foreground and daemon servers (from another terminal). In foreground mode, type `stop` in the console for a clean shutdown. Ctrl+C kills the server without saving.
+
+Logs: `servers/<name>/server.log` (server output), `servers/<name>/daemon.log` (PushMC's own output in daemon mode).
 
 More examples:
 ```
 # Fabric, 4 GB of RAM, auto-pick Java
-./PushMC --name fab --version 1.21.4 --core fabric --eula --xms 2G --xmx 4G --java-auto
+./pushmc start --name fab --version 1.21.4 --core fabric --eula --xms 2G --xmx 4G --java-auto
 
 # Creative, peaceful server with a fixed seed and an existing world
-./PushMC --name build --version 1.21.4 --core purpur --eula \
+./pushmc start --name build --version 1.21.4 --core purpur --eula \
   --gamemode creative --difficulty peaceful --seed 12345 --ready-world ~/saves/MyWorld
 
 # Cracked server (turn off online-mode)
-./PushMC --name lan --version 1.21.4 --core paper --eula --online-mode false
+./pushmc start --name lan --version 1.21.4 --core paper --eula --online-mode false
 
 # Core without built-in support: your own URL
-./PushMC --name custom --version 1.20.1 --core paper --eula \
+./pushmc start --name custom --version 1.20.1 --core paper --eula \
   --custom-core-url https://example.com/some-server.jar
 ```
 
@@ -76,23 +92,34 @@ More examples:
 | `--custom-java-path` | Path to a Java executable | — |
 | `--java-auto` | Auto-select the newest Java ≤ 21 | off |
 | `--ready-world` | Copy this world folder into the server | — |
+| `--daemon` | Run the server in the background | off |
 
-`server.properties` flags: `--online-mode`, `--pvp`, `--allow-flight` (default `true`, disable with `--online-mode false`), `--max-players` (20), `--gamemode` (survival), `--difficulty` (hard), `--motd`, `--white-list`, `--view-distance` (10), `--simulation-distance` (10), `--enable-command-block`, `--spawn-protection` (16), `--seed`, `--world-type` (default), `--bonus-chest`.
+`server.properties` flags: `--online-mode`, `--pvp`, `--allow-flight` (default `true`, disable with `--allow-flight false`), `--max-players` (20), `--gamemode` (survival), `--difficulty` (hard), `--motd`, `--white-list`, `--view-distance` (10), `--simulation-distance` (10), `--enable-command-block`, `--spawn-protection` (16), `--seed`, `--world-type` (default), `--bonus-chest`.
 
 These flags are only applied when `server.properties` doesn't exist yet. If the file is already there, PushMC keeps it untouched. To re-apply flags, delete the file.
 
 For these, use `--custom-core-url`.
 
 ## Known limitations
-- Windows code paths (`run.bat` / `cmd`) are written from the documentation but **not tested on a real Windows machine yet**. Feedback is very welcome.
+- Windows code paths (`run.bat` / `cmd`, and daemon mode) are written from the documentation but **not tested on a real Windows machine yet**. Feedback is very welcome.
+- The control channel for `status` / `cmd` / `stop` is a local TCP port on `127.0.0.1`. Any process on the same machine can send commands to your server. Don't use it on shared machines.
+- While a daemon is running, the PushMC binary can be locked on Windows. Run `pushmc stop <name>` before rebuilding.
+- `server.log` is not rotated.
 
 ## Roadmap
-v1 (CLI) is done. 
-for v2 daemon planned:
-- [ ] daemon mode for proper working background task
+v1 (CLI) is done.
+
+v2 (daemon) is done: 
+- [x] daemon mode for proper working background task 
+- [x] quick start of installed servers (`pushmc run <name>`)
+
+for v2.5 planned:
+
 - [ ] Extra management commands for running servers (e.g. `--op <nick>` on start)
 - [ ] MC version → required Java version table (auto-pick Java 8/16/17/21)
+
 for v3 planned:
+
 - [ ] SFTP/SSH deploy to a remote server
 - [ ] Modrinth and CurseForge integration: quick install of modpacks, mods or plugins
 - [ ] GUI + proper localization

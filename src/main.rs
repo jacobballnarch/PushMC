@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+use tokio::io::AsyncReadExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -6,8 +8,9 @@ use tokio::io::AsyncWriteExt;
 use tokio_stream::StreamExt;
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
 
-#[derive(Parser)]
+#[derive(clap::Args)]
 struct Args {
     #[arg(long)]
     name:String,
@@ -61,6 +64,31 @@ struct Args {
     bonus_chest: bool,
     #[arg(long)]
     ready_world: Option<String>,
+    #[arg(long)]
+    daemon: bool,
+}
+
+#[derive(clap::Subcommand)]
+enum Cmd {
+    Start(Args),
+    Status { name: String },
+    Stop { name: String },
+    Errors { name: String },
+    Cmd { name: String, line: Vec<String> },
+    /// Start an already installed server (no version/core flags needed)
+    Run {
+        name: String,
+        #[arg(long)]
+        daemon: bool,
+    },
+    #[command(hide = true)]
+    Serve { name: String },
+}
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
 }
 
 async fn write_properties(dir: &Path, args: &Args) {
@@ -349,9 +377,11 @@ fn get_java_major_version(java_path: &Path) -> Option<u32> {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
+async fn start(args: Args) {
+    if try_ask(&args.name, "status").await.is_some() {
+        println!("Server '{}' is already running", args.name);
+        return;
+    }
     let java_path: PathBuf = if let Some(custom) = &args.custom_java_path {
         PathBuf::from(custom)
     } else {
@@ -448,33 +478,197 @@ async fn main() {
         (java_path_str, vec![&xms_flag, &xmx_flag, "-jar", &jar_name, "nogui"])
     };
 
-    let mut child = tokio::process::Command::new(program)
-        .args(&launch_args)
-        .current_dir(&dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("failed to launch server");
+    let spec = serde_json::json!({ "program": program, "args": launch_args });
+    std::fs::write(dir.join("launch.json"), spec.to_string()).unwrap();
 
-    let mut stdin = child.stdin.take().expect("stdin not connected");
-    let stdout = child.stdout.take().expect("stdout not connected");
+    launch(args.name, args.daemon).await;
+}
 
-    tokio::spawn(async move {
-        let mut reader = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            println!("[server] {line}");
-        }
+async fn launch(name: String, daemon: bool) {
+    if try_ask(&name, "status").await.is_some() {
+        println!("Server '{name}' is already running");
+        return;
+    }
+    if daemon {
+        spawn_daemon(&name);
+    } else {
+        serve(name, true).await;
+    }
+}
+
+fn spawn_daemon(name: &str) {
+    let dir = server_dir(name);
+    let log = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(dir.join("daemon.log")).unwrap();
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["serve", name])
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log);
+
+    #[cfg(unix)]
+    { use std::os::unix::process::CommandExt; cmd.process_group(0); }
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x00000008 | 0x00000200); }
+
+    cmd.spawn().expect("failed to start daemon");
+    println!("Daemon started. Try: pushmc status {name}");
+}
+
+struct State {
+    errors: Mutex<Vec<String>>,
+    started: std::time::Instant,
+    tx: tokio::sync::mpsc::Sender<String>,
+    pid: u32,
+    log: Mutex<std::fs::File>,
+}
+
+fn log_line(st: &State, line: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = st.log.lock() {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+async fn serve(name: String, foreground: bool) {
+    let dir = server_dir(&name);
+    let spec: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("launch.json")).unwrap()).unwrap();
+    let args: Vec<&str> = spec["args"].as_array().unwrap().iter().filter_map(|a| a.as_str()).collect();
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(dir.join("server.log")).expect("cannot open server.log");
+
+    let mut child = tokio::process::Command::new(spec["program"].as_str().unwrap())
+        .args(args).current_dir(&dir)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("failed to launch server");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+    let state = Arc::new(State {
+        errors: Mutex::new(Vec::new()),
+        started: std::time::Instant::now(),
+        tx,
+        pid: child.id().unwrap_or(0),
+        log: Mutex::new(log_file),
     });
 
     tokio::spawn(async move {
-        let mut input = BufReader::new(tokio::io::stdin()).lines();
-        while let Ok(Some(line)) = input.next_line().await {
-            if stdin.write_all(line.as_bytes()).await.is_err() { break; }
-            if stdin.write_all(b"\n").await.is_err() { break; }
-            if line == "stop" { break; }
+        while let Some(line) = rx.recv().await {
+            if stdin.write_all(format!("{line}\n").as_bytes()).await.is_err() { break; }
         }
     });
 
-    let status = child.wait().await.expect("error while waiting for process");
-    println!("Java exited with code: {:?}", status.code());
+    let mut readers = Vec::new();
+    for stream in [
+        Box::pin(stdout) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        Box::pin(stderr),
+    ] {
+        let st = state.clone();
+        readers.push(tokio::spawn(async move {
+            let mut lines = BufReader::new(stream).lines();
+            while let Ok(Some(l)) = lines.next_line().await {
+                if foreground { println!("[server] {l}"); }
+                log_line(&st, &l);
+                if l.contains("/ERROR]") || l.contains("Exception") {
+                    st.errors.lock().unwrap().push(l);
+                }
+            }
+        }));
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let port_file = dir.join("pushmc.port");
+    std::fs::write(&port_file, port.to_string()).unwrap();
+
+    let st = state.clone();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = listener.accept().await {
+            tokio::spawn(handle(s, st.clone()));
+        }
+    });
+
+    if foreground {
+        let tx = state.tx.clone();
+        tokio::spawn(async move {
+            let mut input = BufReader::new(tokio::io::stdin()).lines();
+            while let Ok(Some(line)) = input.next_line().await {
+                if tx.send(line).await.is_err() { break; }
+            }
+        });
+    }
+
+    let status = child.wait().await.ok();
+    let _ = std::fs::remove_file(&port_file);
+    for h in readers { let _ = h.await; }
+    if foreground {
+        println!("Java exited with code: {:?}", status.and_then(|s| s.code()));
+        std::process::exit(0); // stdin-таск блокирует завершение рантайма
+    }
+}
+
+async fn handle(stream: TcpStream, st: Arc<State>) {
+    let (r, mut w) = stream.into_split();
+    let mut req = String::new();
+    BufReader::new(r).read_line(&mut req).await.ok();
+    let req = req.trim();
+
+    let reply = match req {
+        "status" => format!("running, pid {}, uptime {}s, errors: {}",
+                            st.pid, st.started.elapsed().as_secs(), st.errors.lock().unwrap().len()),
+        "errors" => {
+            let e = st.errors.lock().unwrap();
+            if e.is_empty() { "no errors".into() } else { e.join("\n") }
+        }
+        "stop" => { st.tx.send("stop".into()).await.ok(); "stopping...".into() }
+        _ if req.starts_with("cmd ") => { st.tx.send(req[4..].to_string()).await.ok(); "sent".into() }
+        _ => "unknown command".into(),
+    };
+    w.write_all(reply.as_bytes()).await.ok();
+}
+
+async fn try_ask(name: &str, req: &str) -> Option<String> {
+    let port_file = server_dir(name).join("pushmc.port");
+    let port = std::fs::read_to_string(&port_file).ok()?;
+    let mut s = match TcpStream::connect(format!("127.0.0.1:{}", port.trim())).await {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = std::fs::remove_file(&port_file);
+            return None;
+        }
+    };
+    s.write_all(format!("{req}\n").as_bytes()).await.ok()?;
+    let mut out = String::new();
+    s.read_to_string(&mut out).await.ok()?;
+    Some(out)
+}
+
+async fn ask(name: &str, req: &str) -> String {
+    try_ask(name, req).await
+        .unwrap_or_else(|| format!("Server '{name}' is not running"))
+}
+#[tokio::main]
+async fn main() {
+    match Cli::parse().cmd {
+        Cmd::Start(args) => start(args).await,
+        Cmd::Serve { name } => serve(name, false).await,
+        Cmd::Run { name, daemon } => {
+            if !server_dir(&name).join("launch.json").exists() {
+                println!("Server '{name}' is not installed. Use: pushmc start --name {name} ...");
+                return;
+            }
+            launch(name, daemon).await;
+        }
+        Cmd::Status { name } => println!("{}", ask(&name, "status").await),
+        Cmd::Stop { name } => println!("{}", ask(&name, "stop").await),
+        Cmd::Errors { name } => println!("{}", ask(&name, "errors").await),
+        Cmd::Cmd { name, line } => println!("{}", ask(&name, &format!("cmd {}", line.join(" "))).await),
+    }
 }
