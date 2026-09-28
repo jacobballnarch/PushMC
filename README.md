@@ -87,11 +87,13 @@ For these, use `--custom-core-url`.
 - Windows code paths (`run.bat` / `cmd`) are written from the documentation but **not tested on a real Windows machine yet**. Feedback is very welcome.
 
 ## Roadmap
-v1 (CLI) is done. 
+v1 (CLI) is done.
+
 for v2 daemon planned:
 - [ ] daemon mode for proper working background task
 - [ ] Extra management commands for running servers (e.g. `--op <nick>` on start)
 - [ ] MC version → required Java version table (auto-pick Java 8/16/17/21)
+
 for v3 planned:
 - [ ] SFTP/SSH deploy to a remote server
 - [ ] Modrinth and CurseForge integration: quick install of modpacks, mods or plugins
