@@ -29,9 +29,9 @@ struct Args {
     custom_java_path: Option<String>,
     #[arg(long)]
     java_auto: bool,
-    #[arg(long, default_value = "true")]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
     online_mode: bool,
-    #[arg(long, default_value = "true")]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
     pvp: bool,
     #[arg(long, default_value_t = 20)]
     max_players: u32,
@@ -51,7 +51,7 @@ struct Args {
     enable_command_block: bool,
     #[arg(long, default_value_t = 16)]
     spawn_protection: u32,
-    #[arg(long, default_value = "true")]
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
     allow_flight: bool,
     #[arg(long)]
     seed: Option<String>,
@@ -64,6 +64,11 @@ struct Args {
 }
 
 async fn write_properties(dir: &Path, args: &Args) {
+    let path = dir.join("server.properties");
+    if path.exists() {
+        println!("server.properties already exists, keeping it (property flags ignored)");
+        return;
+    }
     let mut c = String::new();
     c.push_str(&format!("online-mode={}\n", args.online_mode));
     c.push_str(&format!("pvp={}\n", args.pvp));
@@ -111,7 +116,9 @@ enum Core {
 fn client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder().timeout(Duration::from_secs(10)).build().unwrap()
+        reqwest::Client::builder().connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(30))
+            .build().expect("Could not build client for jar downloading")
     })
 }
 
@@ -239,7 +246,8 @@ async fn download_version(core: &Core, mc_version: &str, dir: &Path, exp: bool, 
                 }
                 Core::Purpur => {
                     let resp = client().get("https://api.purpurmc.org/v2/purpur").send().await.ok().unwrap();
-                    parse_purpur_versions(resp).await;
+                    let respstatus = resp.error_for_status().expect("Purpur api error");
+                    parse_purpur_versions(respstatus).await;
                 }
                 _ => println!("(version listing not supported for this core yet)"),
             }
@@ -365,9 +373,22 @@ async fn main() {
                 println!("{}) {} — {}", i + 1, p.display(), v.map(|v| v.to_string()).unwrap_or("unknown".into()));
             }
             println!("Choose a number:");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
-            let idx: usize = input.trim().parse().expect("not a number");
+
+            if versioned.is_empty() {
+                eprintln!("No Java found. Use --custom-java-path");
+                return;
+            }
+
+            let idx = loop {
+                println!("Choose a number (1-{}):", versioned.len());
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                match input.trim().parse::<usize>() {
+                    Ok(n) if (1..=versioned.len()).contains(&n) => break n,
+                    _ => println!("Invalid choice, try again"),
+                }
+            };
+
             versioned[idx - 1].0.clone()
         }
     };
