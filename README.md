@@ -94,10 +94,19 @@ More examples:
 | `--java-auto` | Auto-select the Java for your version | off |
 | `--ready-world` | Copy this world folder into the server | — |
 | `--daemon` | Run the server in the background | off |
+| `--cmd` | Console command to run once the server is ready. Repeat the flag for several | — |
 
 `server.properties` flags: `--online-mode`, `--pvp`, `--allow-flight` (default `true`, disable with `--allow-flight false`), `--max-players` (20), `--gamemode` (survival), `--difficulty` (hard), `--motd`, `--white-list`, `--view-distance` (10), `--simulation-distance` (10), `--enable-command-block`, `--spawn-protection` (16), `--seed`, `--world-type` (default), `--bonus-chest`.
 
 These flags are only applied when `server.properties` doesn't exist yet. If the file is already there, PushMC keeps it untouched. To re-apply flags, delete the file.
+
+### Startup commands
+`--cmd` runs a console command as soon as the server is ready. Repeat the flag to run several, in order:
+```
+./pushmc start --name survival --version 1.21.4 --core paper --eula \
+  --cmd "op Steve" --cmd "whitelist add Alex" --cmd "gamerule keepInventory true"
+```
+Put each command in quotes. The commands are saved with the server and run on **every** start, including `pushmc run <name>`, so use ones that are safe to repeat (`op`, `whitelist add`, `gamerule`, ...).
 
 ## Known limitations
 - Windows code paths (`run.bat` / `cmd`, and daemon mode) are written from the documentation but **not tested on a real Windows machine yet**. Feedback is very welcome.
@@ -114,8 +123,8 @@ v2 (daemon) is done:
 
 for v2.5 planned:
 
-- [ ] Extra management commands for running servers (e.g. `--op <nick>` on start)
-- [x] MC version → required Java version table (auto-pick Java 8/16/17/21)
+- [x] Extra management commands for running servers
+- [x] MC version → required Java version table
 
 for v3 planned:
 

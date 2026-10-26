@@ -58,7 +58,7 @@ struct Args {
     allow_flight: bool,
     #[arg(long)]
     seed: Option<String>,
-    #[arg(long, default_value = "default")]
+    #[arg(long, default_value = "minecraft:normal")]
     world_type: String,
     #[arg(long)]
     bonus_chest: bool,
@@ -66,6 +66,8 @@ struct Args {
     ready_world: Option<String>,
     #[arg(long)]
     daemon: bool,
+    #[arg(long = "cmd")]
+    startup_cmds: Vec<String>,
 }
 
 #[derive(clap::Subcommand)]
@@ -512,10 +514,11 @@ async fn start(args: Args) {
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_string_lossy().to_string());
     let spec = serde_json::json!({
-    "program": program,
-    "args": launch_args,
-    "java_bin_dir": java_bin_dir,
-});
+        "program": program,
+        "args": launch_args,
+        "java_bin_dir": java_bin_dir,
+        "startup_cmds": args.startup_cmds,
+    });
     std::fs::write(dir.join("launch.json"), spec.to_string()).unwrap();
     launch(args.name, args.daemon).await;
 }
@@ -558,6 +561,7 @@ struct State {
     tx: tokio::sync::mpsc::Sender<String>,
     pid: u32,
     log: Mutex<std::fs::File>,
+    startup: Mutex<Option<Vec<String>>>,
 }
 
 fn log_line(st: &State, line: &str) {
@@ -572,6 +576,10 @@ async fn serve(name: String, foreground: bool) {
     let spec: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("launch.json")).unwrap()).unwrap();
     let args: Vec<&str> = spec["args"].as_array().unwrap().iter().filter_map(|a| a.as_str()).collect();
+
+    let startup: Vec<String> = spec["startup_cmds"].as_array()
+        .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+        .unwrap_or_default();
 
     let log_file = std::fs::OpenOptions::new()
         .create(true).append(true)
@@ -600,6 +608,7 @@ async fn serve(name: String, foreground: bool) {
         tx,
         pid: child.id().unwrap_or(0),
         log: Mutex::new(log_file),
+        startup: Mutex::new(Some(startup)),
     });
 
     tokio::spawn(async move {
@@ -619,6 +628,12 @@ async fn serve(name: String, foreground: bool) {
             while let Ok(Some(l)) = lines.next_line().await {
                 if foreground { println!("[server] {l}"); }
                 log_line(&st, &l);
+                if l.contains("Done (") {
+                    let cmds = st.startup.lock().unwrap().take();
+                    for c in cmds.into_iter().flatten() {
+                        st.tx.send(c).await.ok();
+                    }
+                }
                 if l.contains("/ERROR]") || l.contains("Exception") {
                     st.errors.lock().unwrap().push(l);
                 }
