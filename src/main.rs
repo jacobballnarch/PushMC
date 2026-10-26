@@ -382,6 +382,10 @@ async fn start(args: Args) {
         println!("Server '{}' is already running", args.name);
         return;
     }
+    if server_dir(&args.name).join("launch.json").exists() {
+        println!("Server '{}' is already installed. Use: pushmc run {}", args.name, args.name);
+        return;
+    }
     let java_path: PathBuf = if let Some(custom) = &args.custom_java_path {
         PathBuf::from(custom)
     } else {
@@ -460,7 +464,9 @@ async fn start(args: Args) {
             eprintln!("Installation failed, exit code: {:?}", install_status.code());
             return;
         }
-    }
+        let jvm_args = format!("-Xms{}\n-Xmx{}\n", args.xms, args.xmx);
+        tokio::fs::write(dir.join("user_jvm_args.txt"), jvm_args).await.unwrap();
+        }
 
     let xms_flag = format!("-Xms{}", args.xms);
     let xmx_flag = format!("-Xmx{}", args.xmx);
@@ -478,9 +484,15 @@ async fn start(args: Args) {
         (java_path_str, vec![&xms_flag, &xmx_flag, "-jar", &jar_name, "nogui"])
     };
 
-    let spec = serde_json::json!({ "program": program, "args": launch_args });
+    let java_bin_dir = java_path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().to_string());
+    let spec = serde_json::json!({
+    "program": program,
+    "args": launch_args,
+    "java_bin_dir": java_bin_dir,
+});
     std::fs::write(dir.join("launch.json"), spec.to_string()).unwrap();
-
     launch(args.name, args.daemon).await;
 }
 
@@ -541,11 +553,18 @@ async fn serve(name: String, foreground: bool) {
         .create(true).append(true)
         .open(dir.join("server.log")).expect("cannot open server.log");
 
-    let mut child = tokio::process::Command::new(spec["program"].as_str().unwrap())
-        .args(args).current_dir(&dir)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().expect("failed to launch server");
+    let mut cmd = tokio::process::Command::new(spec["program"].as_str().unwrap());
+    cmd.args(args).current_dir(&dir)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    if let Some(bin) = spec["java_bin_dir"].as_str() {
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![PathBuf::from(bin)];
+        paths.extend(std::env::split_paths(&old));
+        cmd.env("PATH", std::env::join_paths(paths).unwrap());
+    }
+
+    let mut child = cmd.spawn().expect("failed to launch server");
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();

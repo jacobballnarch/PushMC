@@ -48,6 +48,7 @@ Minimal example (Paper 1.21.4, EULA accepted):
 ./pushmc start --name survival --version 1.21.4 --core paper --eula
 ```
 The server is created in `./servers/<name>/`, relative to the folder you run PushMC from. Always run it from the same folder to find your servers again.
+For ready servers strongly recommend use run instead of start.
 
 ### Managing servers
 ```
@@ -97,8 +98,6 @@ More examples:
 `server.properties` flags: `--online-mode`, `--pvp`, `--allow-flight` (default `true`, disable with `--allow-flight false`), `--max-players` (20), `--gamemode` (survival), `--difficulty` (hard), `--motd`, `--white-list`, `--view-distance` (10), `--simulation-distance` (10), `--enable-command-block`, `--spawn-protection` (16), `--seed`, `--world-type` (default), `--bonus-chest`.
 
 These flags are only applied when `server.properties` doesn't exist yet. If the file is already there, PushMC keeps it untouched. To re-apply flags, delete the file.
-
-For these, use `--custom-core-url`.
 
 ## Known limitations
 - Windows code paths (`run.bat` / `cmd`, and daemon mode) are written from the documentation but **not tested on a real Windows machine yet**. Feedback is very welcome.
