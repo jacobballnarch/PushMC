@@ -377,6 +377,21 @@ fn get_java_major_version(java_path: &Path) -> Option<u32> {
     }
 }
 
+fn required_java(mc: &str) -> Option<u32> {
+    let mut p = mc.split(|c| c == '.' || c == '-');
+    let major: u32 = p.next()?.parse().ok()?;
+    if major >= 26 { return Some(25); }
+    if major != 1 { return None; }
+    let minor: u32 = p.next()?.parse().ok()?;
+    let patch: u32 = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    Some(match (minor, patch) {
+        (0..=16, _) => 8,
+        (17, _) => 16,
+        (18..=19, _) | (20, 0..=4) => 17,
+        _ => 21,
+    })
+}
+
 async fn start(args: Args) {
     if try_ask(&args.name, "status").await.is_some() {
         println!("Server '{}' is already running", args.name);
@@ -395,12 +410,16 @@ async fn start(args: Args) {
             .collect();
 
         if args.java_auto {
-            versioned.iter()
-                .filter_map(|(p, v)| v.map(|v| (p, v)))
-                .filter(|(_, v)| *v <= 21)
-                .max_by_key(|(_, v)| *v)
-                .map(|(p, _)| p.clone())
-                .expect("no suitable Java (<=21) found on this machine")
+            let usable = versioned.iter().filter_map(|(p, v)| v.map(|v| (p, v)));
+            let best = match required_java(&args.version) {
+                Some(need) => usable.filter(|(_, v)| *v >= need).min_by_key(|(_, v)| *v),
+                None => usable.max_by_key(|(_, v)| *v),
+            };
+            let Some((p, _)) = best else {
+                eprintln!("No suitable Java found for Minecraft {}. Use --custom-java-path", args.version);
+                return;
+            };
+            p.clone()
         } else {
             println!("Found Java versions:");
             for (i, (p, v)) in versioned.iter().enumerate() {
@@ -426,6 +445,11 @@ async fn start(args: Args) {
             versioned[idx - 1].0.clone()
         }
     };
+    if let (Some(need), Some(have)) = (required_java(&args.version), get_java_major_version(&java_path)) {
+        if have < need {
+            println!("Warning: Minecraft {} needs Java {need}+, selected Java is {have}", args.version);
+        }
+    }
     let dir = server_dir(&args.name);
     let jar_name = download_version(&args.core, &args.version, &dir, args.experimental, &args.custom_core_url)
         .await
