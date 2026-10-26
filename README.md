@@ -91,7 +91,7 @@ More examples:
 | `--custom-core-url` | Download the jar/installer from this URL instead | — |
 | `--xms` / `--xmx` | Initial / max RAM | `1G` / `2G` |
 | `--custom-java-path` | Path to a Java executable | — |
-| `--java-auto` | Auto-select the newest Java ≤ 21 | off |
+| `--java-auto` | Auto-select the Java for your version | off |
 | `--ready-world` | Copy this world folder into the server | — |
 | `--daemon` | Run the server in the background | off |
 
@@ -115,7 +115,7 @@ v2 (daemon) is done:
 for v2.5 planned:
 
 - [ ] Extra management commands for running servers (e.g. `--op <nick>` on start)
-- [ ] MC version → required Java version table (auto-pick Java 8/16/17/21)
+- [x] MC version → required Java version table (auto-pick Java 8/16/17/21)
 
 for v3 planned:
 
